@@ -189,7 +189,7 @@ if __name__ == "__main__":
     NUM_CLIENTS = 10
     NUM_DELEGATES = 7
     PERCENT_MALICIOUS = 0.3 # 30% of clients are malicious
-    REPUTATION_THRESHOLD = 3.0 # tau
+    REPUTATION_THRESHOLD = 3.5 # tau
     NUM_ROUNDS = 20 # Let's run for enough rounds to see reputations drop
     BLOCK_SIZE = 5 # Max transactions per block
     ATTACK_ROUND = 15 # The round where the coordinated attack happens
