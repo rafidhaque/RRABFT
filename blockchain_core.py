@@ -70,12 +70,16 @@ class DelegateNode:
 
 class dBFTEngine:
     """Manages the dBFT consensus process."""
-    def __init__(self, delegates: List[DelegateNode], mempool: Mempool):
+    # --- FIX: Add malicious_client_ids to the method signature ---
+    def __init__(self, delegates: List[DelegateNode], mempool: Mempool, malicious_client_ids: List[int]): 
         self.delegates = delegates
         self.mempool = mempool
         self.speaker_idx = 0
+        self.malicious_client_ids = malicious_client_ids # Store for the experiment
 
-    def run_consensus_round(self, tau: float, block_size: int, last_block_hash: str) -> Block | None:
+# In blockchain_core.py -> class dBFTEngine
+
+    def run_consensus_round(self, current_round: int, tau: float, block_size: int, last_block_hash: str, attack_round: int) -> Block | None: # Add more params
         """Simulates one full round of consensus."""
         print("\n--- Starting Consensus Round ---")
         if not self.mempool.pending_transactions:
@@ -85,7 +89,24 @@ class dBFTEngine:
         # 1. Propose Block
         speaker = self.delegates[self.speaker_idx]
         print(f"Speaker is Delegate {speaker.delegate_id}")
-        transactions = self.mempool.get_transactions(block_size)
+
+        transactions = []
+        # --- THIS IS THE NEW ATTACK LOGIC ---
+        if current_round == attack_round:
+            print(f"!!! COORDINATED ATTACK TRIGGERED IN ROUND {current_round} !!!")
+            # Malicious speaker deliberately selects only transactions from fellow malicious clients
+            malicious_txs = [tx for tx in self.mempool.pending_transactions if tx.client_id in self.malicious_client_ids]
+            
+            # To make it realistic, we take them out of the mempool
+            non_malicious_txs = [tx for tx in self.mempool.pending_transactions if tx.client_id not in self.malicious_client_ids]
+            
+            self.mempool.pending_transactions = deque(non_malicious_txs) # Put honest ones back
+            
+            transactions = malicious_txs[:block_size]
+            print(f"Malicious speaker created a block with {len(transactions)} updates from known attackers.")
+        else:
+            # Normal operation
+            transactions = self.mempool.get_transactions(block_size)
         
         proposed_block = Block(
             block_id=0, # Will be set by the blockchain
@@ -110,11 +131,13 @@ class dBFTEngine:
             return proposed_block
         else:
             print("CONSENSUS FAILED. Block is rejected.")
-            # Re-add transactions to mempool for next round
+            # Re-add transactions to mempool for next round. 
+            # In a real attack, these would just be dropped. But for simulation, let's put them back.
             for tx in proposed_block.transactions:
                 self.mempool.add_transaction(tx)
             self.speaker_idx = (self.speaker_idx + 1) % len(self.delegates)
             return None
+
 
 class Blockchain:
     """Simulates the blockchain ledger."""

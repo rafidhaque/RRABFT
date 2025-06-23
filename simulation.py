@@ -7,6 +7,9 @@ from fl_client import FL_Client
 from blockchain_core import Mempool, ReputationSC, DelegateNode, dBFTEngine, Blockchain
 from data_structures import Transaction, Block
 
+# In simulation.py
+# --- REPLACE THE ENTIRE AGGREGATOR CLASS WITH THIS ---
+
 class Aggregator:
     """Orchestrates the FL process post-consensus."""
     def __init__(self, client_ids: List[int], reputation_contract: ReputationSC):
@@ -14,6 +17,45 @@ class Aggregator:
         self.global_model_weights = np.random.rand(10, 10) # Dummy model weights
         self.reputation_contract = reputation_contract
         self.off_chain_storage = {} # {update_hash: full_update_data}
+
+    def process_finalized_block(self, block: Block):
+        """Aggregates models from a finalized block and updates reputations."""
+        print("\n--- Aggregator Processing Finalized Block ---")
+        if not block.transactions:
+            print("Block is empty, no aggregation needed.")
+            return
+
+        # 1. Fetch updates from off-chain storage
+        updates_to_process = []
+        client_ids_in_block = []
+        for tx in block.transactions:
+            update = self.off_chain_storage.get(tx.update_hash)
+            if update is not None:
+                updates_to_process.append(update)
+                client_ids_in_block.append(tx.client_id)
+        
+        if not updates_to_process:
+            print("No valid updates found in off-chain storage.")
+            return
+
+        # 2. NEW: Calculate a ROBUST global update using the median
+        robust_global_update = np.median(updates_to_process, axis=0)
+
+        # 3. Score contributions against this robust update and update reputations
+        print("Updating reputations based on contribution quality...")
+        for i, update in enumerate(updates_to_process):
+            client_id = client_ids_in_block[i]
+            # Quality score based on cosine similarity to the ROBUST global update
+            cos_sim = np.dot(update.flatten(), robust_global_update.flatten()) / (np.linalg.norm(update.flatten()) * np.linalg.norm(robust_global_update.flatten()))
+            # Scale score to be in a range, e.g., 0-10
+            quality_score = max(0, 10 * cos_sim) 
+            self.reputation_contract.update_reputation(client_id, quality_score)
+        
+        # 4. Update the actual global model with the robust update
+        self.global_model_weights += robust_global_update
+        print("Global model updated using robust median aggregation.")
+
+
 
     def process_finalized_block(self, block: Block):
         """Aggregates models from a finalized block and updates reputations."""
@@ -76,7 +118,9 @@ class SimulationEngine:
         self.num_clients = num_clients
         self.num_delegates = num_delegates
         
-        # Create Clients
+        # --- FIX: REARRANGE THE ORDER OF INITIALIZATION ---
+
+        # 1. Create Clients
         client_ids = list(range(num_clients))
         num_malicious = int(num_clients * percent_malicious)
         self.clients = [
@@ -85,20 +129,26 @@ class SimulationEngine:
         ]
         print(f"Created {num_clients} clients ({num_malicious} malicious).")
 
-        # Create Blockchain and Core Components
+        # 2. Define the list of malicious clients (NOW it's available)
+        self.malicious_client_ids = [c.client_id for c in self.clients if c.is_malicious]
+
+        # 3. Create Blockchain and Core Components
         self.mempool = Mempool()
         self.reputation_sc = ReputationSC(client_ids)
         self.blockchain = Blockchain()
         
         delegates = [DelegateNode(d_id, self.reputation_sc) for d_id in range(num_delegates)]
-        self.dbft_engine = dBFTEngine(delegates, self.mempool)
         
-        # Create Aggregator
+        # 4. Create the dBFT Engine (NOW self.malicious_client_ids exists)
+        self.dbft_engine = dBFTEngine(delegates, self.mempool, self.malicious_client_ids)
+        
+        # 5. Create the Aggregator
         self.aggregator = Aggregator(client_ids, self.reputation_sc)
+
         
-    def run_simulation(self, num_rounds: int, tau: float, block_size: int):
+    def run_simulation(self, num_rounds: int, tau: float, block_size: int, attack_round: int):
         """The main simulation loop."""
-        print(f"\n=== Starting Simulation: {num_rounds} rounds, Rep Threshold (tau)={tau} ===")
+        print(f"\n=== Starting Simulation: {num_rounds} rounds, Rep Threshold (tau)={tau}, Attack Round={attack_round} ===")
         
         for r in range(num_rounds):
             print(f"\n{'='*20} ROUND {r+1}/{num_rounds} {'='*20}")
@@ -116,7 +166,8 @@ class SimulationEngine:
             
             # 2. Consensus Phase
             last_block_hash = self.blockchain.get_last_block_hash()
-            finalized_block = self.dbft_engine.run_consensus_round(tau, block_size, last_block_hash)
+            # --- THIS IS THE CORRECTED LINE ---
+            finalized_block = self.dbft_engine.run_consensus_round(r + 1, tau, block_size, last_block_hash, attack_round)
             
             # 3. Aggregation Phase
             if finalized_block:
@@ -132,15 +183,17 @@ class SimulationEngine:
                 malicious_status = "(Malicious)" if self.clients[i].is_malicious else "(Honest)"
                 print(f"  Client {i} {malicious_status}: Reputation = {rep:.2f}")
 
+
 if __name__ == "__main__":
     # Simulation Parameters
     NUM_CLIENTS = 10
     NUM_DELEGATES = 7
     PERCENT_MALICIOUS = 0.3 # 30% of clients are malicious
     REPUTATION_THRESHOLD = 3.0 # tau
-    NUM_ROUNDS = 30
+    NUM_ROUNDS = 20 # Let's run for enough rounds to see reputations drop
     BLOCK_SIZE = 5 # Max transactions per block
+    ATTACK_ROUND = 15 # The round where the coordinated attack happens
 
     # Create and run the simulation
     engine = SimulationEngine(NUM_CLIENTS, NUM_DELEGATES, PERCENT_MALICIOUS)
-    engine.run_simulation(NUM_ROUNDS, REPUTATION_THRESHOLD, BLOCK_SIZE)
+    engine.run_simulation(NUM_ROUNDS, REPUTATION_THRESHOLD, BLOCK_SIZE, ATTACK_ROUND)
