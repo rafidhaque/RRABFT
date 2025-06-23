@@ -1,4 +1,5 @@
 # blockchain_core.py
+import hashlib # <--- FIX: Import the hashlib library
 from collections import deque
 from typing import List, Dict
 import time

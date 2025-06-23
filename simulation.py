@@ -23,25 +23,39 @@ class Aggregator:
             return
 
         # 1. Fetch updates from off-chain storage
-        updates_to_aggregate = []
+        updates_to_process = []
         client_ids_in_block = []
         for tx in block.transactions:
             update = self.off_chain_storage.get(tx.update_hash)
             if update is not None:
-                updates_to_aggregate.append(update)
+                updates_to_process.append(update)
                 client_ids_in_block.append(tx.client_id)
         
-        if not updates_to_aggregate:
+        if not updates_to_process:
             print("No valid updates found in off-chain storage.")
             return
 
-        # 2. Aggregate models (Federated Averaging)
-        global_update = np.mean(updates_to_aggregate, axis=0)
-        self.global_model_weights += global_update
-        print("Global model updated.")
+        # 2. NEW: Calculate a ROBUST global update using the median
+        # The median is much more resistant to outliers (our poisoned updates)
+        # This serves as a more reliable "ground truth" for scoring
+        robust_global_update = np.median(updates_to_process, axis=0)
 
-        # 3. Calculate quality scores and update reputations
-        self.update_reputations(updates_to_aggregate, client_ids_in_block, global_update)
+        # 3. Score contributions against this robust update and update reputations
+        print("Updating reputations based on contribution quality...")
+        for i, update in enumerate(updates_to_process):
+            client_id = client_ids_in_block[i]
+            # Quality score based on cosine similarity to the ROBUST global update
+            cos_sim = np.dot(update.flatten(), robust_global_update.flatten()) / (np.linalg.norm(update.flatten()) * np.linalg.norm(robust_global_update.flatten()))
+            # Scale score to be in a range, e.g., 0-10
+            # A negative similarity (malicious update) will result in a score of 0
+            quality_score = max(0, 10 * cos_sim) 
+            self.reputation_contract.update_reputation(client_id, quality_score)
+        
+        # 4. Update the actual global model with the robust update
+        self.global_model_weights += robust_global_update
+        print("Global model updated using robust median aggregation.")
+
+
 
     def update_reputations(self, updates: List[np.ndarray], client_ids: List[int], global_update: np.ndarray):
         """Calculates quality scores and tells the SC to update."""
@@ -124,7 +138,7 @@ if __name__ == "__main__":
     NUM_DELEGATES = 7
     PERCENT_MALICIOUS = 0.3 # 30% of clients are malicious
     REPUTATION_THRESHOLD = 3.0 # tau
-    NUM_ROUNDS = 5
+    NUM_ROUNDS = 30
     BLOCK_SIZE = 5 # Max transactions per block
 
     # Create and run the simulation
